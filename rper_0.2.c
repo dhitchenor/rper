@@ -1,6 +1,6 @@
 /*
 rper, a quick and easy, POSIX-complaint utility for unix based operating systems, to recursively change permissions of directories, and/or files
-Version: [see below]
+Version: 0.2
 
 Originally released under the MIT License at https://github.com/dhitchenor/rper, as a way to assist with my learning of the C language
 
@@ -23,30 +23,40 @@ Flags:
     non-recursive (-n):
     - only makes changes to the files/directories within the specified directory (directory argument).. essentially the basic use of the chmod command
 
-	rwx notation output (-c) (prospective functionality):
-    - display permissions in the output in rwx notation instead of octal
-
     quiet (-s):
     - suppresses normal output, but still displays any error output
-    - retained as default, if both suppressing flags are given
 
     silenced (-S):
     - suppresses all output, including errors
-    - defaults to -s flag, if both supressing flags are given
     
     verbose (-v):
-    - displays all output; both directory and file changes are provided in output, regardless of flag given
-    - both suppressing flags are ignored if given
+    - displays all output; both directory and file changes are provided in output
+
+    follow symlinks (-L):
+    - follows symlinks
+    - does not error when symlink is found
+    
+    error on symlink (-k):
+    - does not follow symlinks, does not continue if symlink found
+    - error produced when symlnk found
 
     permissions (-p):
     - uses an octal formatted argument (eg. 755 or 0644) as the desired changed permissions.
-    - allows the use of (*) as a wildcard, eg 6*4 will change the user (left-most), and others (right-most) permissions, but not the group(center) permission
+    - allows the use of (*) as a wildcard, for example 6*4:
+      - will change the user (left-most) to 6
+      - others (right-most) permissions to 4
+      - the group(center) permission, remains the original value
     
     help (-h | -H):
     - displays help for the user
     
     about (-a):
     - displays information about rper
+
+rper To-do:
+- process the leading number in a 4 digit octal value, instead of stripping
+- rwx notation output (flag -c); allows use of rwx notation, instead of numerical
+  values. i.e `rper -p rwxr-xr-x ./change/this/to/sevenfivefive/permissions`
 
 C Language notes:
 - strings are in the form of arrays; C doesn't really have 'strings' like other languages
@@ -67,13 +77,36 @@ C Language notes:
 
 /* Global flags */
 // Variables required in multiple functions, not just the main function
-char version[4] = "0.1";					// version number, as a string (array)
+char version[4] = "0.2";					// version number, as a string (array)
 int files_changed = 0;						// Count of files changed
 int dirs_changed = 0;						// Count of directories changed
-int suppress_output = 0;					// suppress normal output, suppress all output except errors and completion
-int suppress_all_output = 0;				// suppress all output, suppress everything except completion output
-int verbose = 0;							// verbose switch, prints all output, even skipped directories/files
+int symlinks_skipped = 0;                   // Count of symlinks skipped
+int symlinks_followed = 0;                  // Count of symlinks followed
+int symlink_errors = 0;                     // Count of symlink errors found
 char wildcard_mode[4] = {0};				// Stores the octal mode with wildcards (e.g., '6*4')
+
+/* Added use of enums (enumerations): a user-defined data type that consists of a set of named integer constants */
+/* If not values are specified, the integers assigned start at zero */
+/* If typedef is not used, integers set in the enum need to be prefaced with 'enum' with each use */
+
+/* Output mode enum - replaces suppress_output, suppress_all_output, verbose */
+typedef enum {
+    OUTPUT_NORMAL = 0,                      // Default: show changes, show errors
+    OUTPUT_QUIET = 1,                       // Suppress normal, show errors only (Flag: -s)
+    OUTPUT_SILENT = 2,                      // Suppress all output (Flag: -S)
+    OUTPUT_VERBOSE = 3                      // Show everything including skipped (Flag: -v)
+} output_mode_t;
+
+output_mode_t output_mode = OUTPUT_NORMAL;
+
+/* Symlink handling modes */
+typedef enum {
+    SYMLINK_SKIP,                           // Skip symlinks, continue (default)
+    SYMLINK_FOLLOW,                         // Follow symlinks (Flag: -L)
+    SYMLINK_ERROR                           // Error on symlinks, stop (Flag: -k)
+} symlink_mode_t;
+
+symlink_mode_t symlink_mode = SYMLINK_SKIP;
 
 /* Functions */
 /*
@@ -82,24 +115,31 @@ char wildcard_mode[4] = {0};				// Stores the octal mode with wildcards (e.g., '
  * if using any of the help flags [h | H], or if rper returns an error.
  */
 void print_usage() {
-    printf("Usage: rper [-f | -d] [-i]  [-n] [-s | -S] [-p mode] [-h | -H] <directory>\n");
-    printf("  -f : Search files only (default function if no flags are provided)\n");
-    printf("  -d : Search directories only (can be used with -f flag)\n");
-    printf("  -i : Include the given directory in the changes (with -d flag only)\n");
-    printf("  -n : Do not apply changes recursively (changes only affect specified directory)\n");
-    printf("  -s : Suppress normal output, only show errors\n");
-    printf("  -S : Suppress all output, including errors\n");
-    printf("  -p : Specify permissions in octal format (e.g., 755, 0644)\n");
-    printf("  -h, -H: Display this help message\n");
+    printf("|============== RPER USAGE =================|\n");
+    printf("  rper [-f] [-d] [-i] [-n] [-s | -S] [-L | -k] [-p mode] <directory>\n");
+    printf("    -f : Search files only (default function if no flags are provided)\n");
+    printf("    -d : Search directories only (can be used with -f flag)\n");
+    printf("    -i : Include the given directory in the changes (with -d flag only)\n");
+    printf("    -n : Do not apply changes recursively (changes only affect specified directory)\n");
+    printf("    -s : Suppress normal output, only show errors\n");
+    printf("    -S : Suppress all output, including errors\n");
+    printf("    -L : Follow symlinks and modify their targets\n");
+    printf("    -k : Stop on symlink encounter and report error\n");
+    printf("    -p : Specify permissions in octal format (e.g., 755, 0644)\n");
+    printf("    -h, -H: Display this help message\n");
+    printf("    -a: Learn about rper\n");
 }
 
 /*
  * This function prints some basic 'about' information, regarding rper 
  */
 void print_about() {
-    printf("rper (pronounced: 'arr per'). version: %s\n", version);
-    printf("Author: Dale Hitchenor");
-    printf("Source: https://github.com/dhitchenor/rper");
+    printf("|============== ABOUT RPER =================|\n");
+    printf("  rper (pronounced: 'arr per')\n");
+    printf("  'recursive permissions'\n");
+    printf("  Version: %s\n\n", version);
+    printf("  Author: Dale Hitchenor\n");
+    printf("  Source: https://github.com/dhitchenor/rper\n");
 }
 /*
  * This function prints the current permissions of a file/directory in octal format.
@@ -119,8 +159,8 @@ mode_t apply_wildcard_mode(mode_t old_mode) {
 	// Iterate through each part (user, group, others) and apply the wildcard
 	for (int i = 0; i < 3; i++) {
         if (wildcard_mode[i] != '*') {			// loop through each of the bits, in the given octal
-            new_mode &= ~(7 << (6 - 3 * i));	// clear the relevant bits
-            new_mode |= (wildcard_mode[i] - '0') << (6 - 3 * i);    // set the new bits, which will make the new mode
+            new_mode &= ~((mode_t)7 << (6 - 3 * i));	// clear the relevant bits
+            new_mode |= ((mode_t)wildcard_mode[i] - '0') << (6 - 3 * i);    // set the new bits, which will make the new mode
         }
     }
 
@@ -145,29 +185,61 @@ void print_wildcard_mode() {
  * This function changes the permissions of a given file/directory.
  * It handles both files and directories and outputs the changes made.
  */
-void change_permissions(const char *path, mode_t mode, int change_files, int change_dirs) {
+void change_permissions(const char *path, int change_files, int change_dirs, symlink_mode_t symlink_mode) {
+    
     struct stat statbuf;						// Structure to hold information about the file/directory
     // Get the status of the file/directory (its type, permissions, etc.)
 	if (lstat(path, &statbuf) != 0) {
-        if (!suppress_output && !suppress_all_output) {
+        if (output_mode != OUTPUT_SILENT) {
             fprintf(stderr, "Error: Cannot access(stat) file %s: %s\n", path, strerror(errno));
         }
         return;
     }
 
-    mode_t old_mode = statbuf.st_mode & 0777;		// Get current permissions (last 3 digits)
+    if (S_ISLNK(statbuf.st_mode)) {
+        switch (symlink_mode) {
+            case SYMLINK_SKIP:                  // Default option of skiping symlink
+                symlinks_skipped++;             // Increment skipped symlink counter for summary
+                if (output_mode == OUTPUT_NORMAL || output_mode == OUTPUT_VERBOSE) {
+                    printf("(L -> SKIP) %s\n", path);
+                }
+                return;
+            
+            case SYMLINK_FOLLOW:                            // use of -L flag, rper follows symlinks
+                if (stat(path, &statbuf) != 0) {            // Use stat() instead of lstat() to follow the symlink
+                    if (output_mode != OUTPUT_SILENT) {     // Checks if error should be shown
+                        fprintf(stderr, "Skipping: Cannot follow symlink %s: %s\n", path, strerror(errno));
+                    }
+                    return;
+                }
+                symlinks_followed++;                        // Increment followed symlink counter for summary
+                if (output_mode == OUTPUT_VERBOSE) {        // Checks thst user wnats a verbose output, (flag -v)
+                    printf("(L -> FOLLOW) %s\n", path);
+                }
+                break;
+            
+            case SYMLINK_ERROR:                             // use of k flag, errors when it finds a symlink
+                symlink_errors++;                           // Increment followed symlink counter for summary
+                if (output_mode != OUTPUT_SILENT) {         // Checks if errors are not silenced
+                    fprintf(stderr, "Error: Symlink found: %s\n", path);
+                }
+                return;
+        }
+    }
+
+    mode_t old_mode = statbuf.st_mode & 0777;		    // Get current permissions (last 3 digits)
     mode_t new_mode = apply_wildcard_mode(old_mode);	// Apply the wildcard to get the new mode
 
     // If the new permissions are the same as the old ones, skip this file/directory
     if (old_mode == new_mode) {
-        if (!suppress_output && !suppress_all_output) {
-            if (S_ISDIR(statbuf.st_mode)) {			// If it's a directory
-                if (change_dirs || verbose) {
-                    printf("(D -> S) %s\n", path);	// outputs D -> S
+        if (output_mode != OUTPUT_QUIET && output_mode != OUTPUT_SILENT) {
+            if (S_ISDIR(statbuf.st_mode)) {			    // If it's a directory
+                if (change_dirs || output_mode == OUTPUT_VERBOSE) {
+                    printf("(D -> S) %s\n", path);	    // outputs D -> S
                 }
-            } else if (S_ISREG(statbuf.st_mode)) {	// If it's a file
-                if (change_files || verbose) {
-                    printf("(F -> S) %s\n", path);	// outputs F -> S
+            } else if (S_ISREG(statbuf.st_mode)) {	    // If it's a file
+                if (change_files || output_mode == OUTPUT_VERBOSE) {
+                    printf("(F -> S) %s\n", path);	    // outputs F -> S
                 }
             }
         }
@@ -177,7 +249,7 @@ void change_permissions(const char *path, mode_t mode, int change_files, int cha
     if (S_ISDIR(statbuf.st_mode) && change_dirs) {
         if (chmod(path, new_mode) == 0) {
             dirs_changed++;						// Increment count of directories changed
-            if (!suppress_output && !suppress_all_output) {
+            if (output_mode != OUTPUT_QUIET && output_mode != OUTPUT_SILENT) {
                 printf("(D ");
                 print_permissions(old_mode);	// Print the old permissions
                 printf(" -> [");
@@ -185,17 +257,17 @@ void change_permissions(const char *path, mode_t mode, int change_files, int cha
                 printf("] ");
                 print_permissions(new_mode);	// Print the actual new permissions
                 printf(") %s\n", path);			// Output the directory path
-            } else {
-                if ((!suppress_output && !suppress_all_output) || verbose) {
-                    fprintf(stderr, "Error: Cannot change directory permissions %s: %s\n", path, strerror(errno));
-                }
+            }
+        } else {
+            if (output_mode != OUTPUT_SILENT) {
+                fprintf(stderr, "Error: Cannot change directory permissions %s: %s\n", path, strerror(errno));
             }
         }
 	// If it's a file and we want to change files
     } else if (S_ISREG(statbuf.st_mode) && change_files) {
         if (chmod(path, new_mode) == 0) {
             files_changed++;					// Increment count of files changed
-            if (!suppress_output && !suppress_all_output) {
+            if (output_mode != OUTPUT_QUIET && output_mode != OUTPUT_SILENT) {
                 printf("(F ");
                 print_permissions(old_mode);	// Print the old permissions
                 printf(" -> [");
@@ -205,7 +277,7 @@ void change_permissions(const char *path, mode_t mode, int change_files, int cha
                 printf(") %s\n", path);			// Output the file path
             }
         } else {
-            if ((!suppress_output && !suppress_all_output) || verbose) {
+            if (output_mode != OUTPUT_SILENT) {
                 fprintf(stderr, "Error: Cannot change file permissions %s: %s\n", path, strerror(errno));
             }
 		}
@@ -217,10 +289,10 @@ void change_permissions(const char *path, mode_t mode, int change_files, int cha
  * given directory and calls change_permissions on each one. If recursion is enabled,
  * it will call itself for any subdirectories it encounters.
  */
-void process_directory(const char *dir_path, mode_t mode, int recursive, int change_files, int change_dirs, int include_dir) {
+void process_directory(const char *dir_path, int recursive, int change_files, int change_dirs, int include_dir, symlink_mode_t symlink_mode) {
     // If -i flag is used and we are processing directories, change the top-level directory too
     if (change_dirs && include_dir) {
-        change_permissions(dir_path, mode, 0, 1);	// Change permissions for the top-level directory
+        change_permissions(dir_path, 0, 1, symlink_mode);	// Change permissions for the top-level directory
     }
 
     DIR *dir;					// Pointer to the directory stream
@@ -229,7 +301,7 @@ void process_directory(const char *dir_path, mode_t mode, int recursive, int cha
 
     // Try to open the directory
     if (!(dir = opendir(dir_path))) {
-        if (!suppress_output && !suppress_all_output) {
+        if (output_mode != OUTPUT_SILENT) {
             fprintf(stderr, "Error: Cannot open directory %s: %s\n", dir_path, strerror(errno));
         }
         return;
@@ -246,11 +318,11 @@ void process_directory(const char *dir_path, mode_t mode, int recursive, int cha
         snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
 
         // Change permissions of the file/directory
-        change_permissions(path, mode, change_files, change_dirs);
+        change_permissions(path, change_files, change_dirs, symlink_mode);
 
         // If recursion is enabled and this entry is a directory, process it recursively
         if (recursive && entry->d_type == DT_DIR) {
-            process_directory(path, mode, recursive, change_files, change_dirs, include_dir);
+            process_directory(path, recursive, change_files, change_dirs, include_dir, symlink_mode);
         }
     }
 
@@ -262,18 +334,18 @@ void process_directory(const char *dir_path, mode_t mode, int recursive, int cha
  * where wildcards (*) are used and ensures the octal value is valid.
  */
 int validate_and_process_octal(char *optarg) {
-    int len = strlen(optarg);
+    size_t len = strlen(optarg);
 
     // Remove leading zero if present and length is 4
-    if (len == 4 && optarg[0] == '0') {
+    if (len == 4u && optarg[0] == '0') {
         optarg++;  // Skip the first character
         len--;
     }
 
     // Check if the length is exactly 3 and contains only valid octal digits or wildcard (*)
-    if (len != 3 || strspn(optarg, "4567*") != 3) {
-        fprintf(stderr, "Error: Invalid octal value: %s (google: unix octal permissions)\n\n", optarg);
-        print_usage();
+    if (len != 3u || strspn(optarg, "4567*") != 3u) {
+        fprintf(stderr, "Error: Invalid octal value: %s (web search: unix octal permissions)\n\n", optarg);
+        printf("type `rper -h` for help\n\n");
         return -1;
     }
 
@@ -293,45 +365,45 @@ int main(int argc, char *argv[]) {
     int recursive = 1;			// By default, process directories recursively
     int include_dir = 0;		// By default, do not include the top-level directory
     int perm_flag = 0;			// By default, no permissions is given; will error if no permissions are given
-    mode_t mode = 0;			// The permissions mode to apply
 
-    while ((opt = getopt(argc, argv, "dfinsSvhHap:")) != -1) {
+    while ((opt = getopt(argc, argv, "dfinsSvLkhHap:")) != -1) {
         switch (opt) {
-            case 'a':                           // prints the 'about' section
+            case 'a':                               // prints the 'about' section
                 print_about();
                 printf("\n");
                 print_usage();
-                return EXIT_SUCCESS;            // exits, so the user can re-attempt after reading
-            case 'h':                           // prints the usage/help section
-            case 'H':                           // make it so that h and H are the same flag
+                return EXIT_SUCCESS;                // exits, so the user can re-attempt after reading
+            case 'h':                               // prints the usage/help section
+            case 'H':                               // make it so that h and H are the same flag
                 print_usage();
-                return EXIT_SUCCESS;            // exits, so the user can re-attempt after reading
+                return EXIT_SUCCESS;                // exits, so the user can re-attempt after reading
             case 'd':
-                change_dirs = 1;                // flag so that rper make changes to directories
-                break;                          // don't exit the program
+                change_dirs = 1;                    // flag so that rper make changes to directories
+                break;                              // don't exit the program
             case 'f':
-                change_files = 1;               // flag so that rper make changes to files
+                change_files = 1;                   // flag so that rper make changes to files
                 break;
             case 'i':
-                include_dir = 1;                // flag so that rper includes the given directory
+                include_dir = 1;                    // flag so that rper includes the given directory
                 break;
             case 'n':
-                recursive = 0;                  // rper is recursive by default, '0' turns it off
+                recursive = 0;                      // rper is recursive by default, '0' turns it off
                 break;
             case 's':
-                suppress_output = 1;
-                suppress_all_output = 0;        // if -s is used, ignore -S
+                output_mode = OUTPUT_QUIET;         // quiet output: only displays errors, if encountered
                 break;
             case 'S':
-                if (!suppress_output) {         // only set suppress_all_output if -s is not set
-                    suppress_all_output = 1;    // making extra sure that 's' gets precedence over 'S'
-                }
+                output_mode = OUTPUT_SILENT;        // silent output: no output, not even errors
                 break;
             case 'v':
-                verbose = 1;					// Enable verbose mode, ensures all output is shown
-                suppress_output = 0;            // ignore -s if -v is used
-                suppress_all_output = 0;        // ignore -S if -v is used
+                output_mode = OUTPUT_VERBOSE;       // verbose output: normal output + extra information
                 break;
+            case 'L':
+                symlink_mode = SYMLINK_FOLLOW;      // follows symlink, notes the symlink that is followed
+                break;
+            case 'k':
+                symlink_mode = SYMLINK_ERROR;       // does not follow symlink
+                break;                              // terminates with error if symlink is encountered
             case 'p':
                 if (validate_and_process_octal(optarg) == -1) {
                     return EXIT_FAILURE;		// Exit if the octal value is invalid
@@ -348,13 +420,13 @@ int main(int argc, char *argv[]) {
     // Check if the user provided a directory as an argument
     if (optind >= argc) {
         fprintf(stderr, "Error: Missing directory argument (directory argument should be last)\n\n");
-        print_usage();
+        printf("type `rper -a` for usgae\n\n");
         return EXIT_FAILURE;
     }
     
     if (!perm_flag) {
         fprintf(stderr, "Error: No permissions detected (use -p)\n\n");
-        print_usage();
+        printf("type `rper -h` for help\n\n");
         return EXIT_FAILURE;
     }
 
@@ -366,14 +438,21 @@ int main(int argc, char *argv[]) {
     }
 
     // Start processing the directory
-    process_directory(directory, mode, recursive, change_files, change_dirs, include_dir);
-    //process_directory(directory, 0, recursive, change_files, change_dirs, include_dir);
+    process_directory(directory, recursive, change_files, change_dirs, include_dir, symlink_mode);
 
     // Print the final completion summary unless all output is suppressed
-    if (!suppress_all_output) {
+    if (output_mode != OUTPUT_SILENT) {
         printf("Operation completed.\n");
         printf("Files changed: %d\n", files_changed);
         printf("Directories changed: %d\n", dirs_changed);
+
+        if (symlink_mode == SYMLINK_SKIP && symlinks_skipped > 0) {
+            printf("Symlinks skipped: %d\n", symlinks_skipped);
+        } else if (symlink_mode == SYMLINK_FOLLOW && symlinks_followed > 0) {
+            printf("Symlinks followed: %d\n", symlinks_followed);
+        } else if (symlink_mode == SYMLINK_ERROR && symlink_errors > 0) {
+            printf("Symlink errors found: %d\n", symlink_errors);
+        }
     }
 
     return EXIT_SUCCESS;                        // Exit with success, returns '0'

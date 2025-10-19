@@ -27,10 +27,12 @@
 2. Unzip, and/or change into the appropriate directory
 3. build using the command: `gcc -o rper rper.c`
    * You should now have a built utility (binary) in the current folder called **rper**
+   * the provided binary was created using the following command: `gcc -o rper rper_0.2.c -Wall -Wextra -Werror -Wformat -Wformat-security -Wconversion -Wsign-conversion -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -pie -Wl,-z,relro,-z,now -O2`
 
 ##### Incorporating into your system:
 1.  **Move** the utility into your operating systems bin directory, eg. /usr/local/bin/
    * example command (assuming you are currently in the same directory as the built utility): `sudo mv rper /usr/local/bin/`
+   * an alternative is to symlink the binary; for example `ln -s ./rper/rper /usr/bin/rper`
 
 > [!IMPORTANT]
 > If you don't wish to incorporate the binary into your system,
@@ -66,15 +68,20 @@ non-recursive (-n):
 
 quiet (-s):
 - suppresses normal output, but still displays any error output
-- retained as default, if both suppressing flags are given
 
 silenced (-S):
 - suppresses all output, including errors
-- defaults to -s flag, if both supressing flags are given
 
 verbose (-v):
-- displays all output; both directory and file changes are provided in output, regardless of flag given
-- both suppressing flags are ignored if given
+- displays all output; both directory and file changes are provided in output
+
+follow symlinks (-L):
+- follows symlinks
+- does not error when symlink is found
+
+error on symlink (-k):
+- does not follow symlinks, does not continue if symlink found
+- error produced when symlnk found
 
 permissions (-p):
 - uses an octal formatted argument (eg. 755 or 0644) as the desired changed permissions.
@@ -90,3 +97,8 @@ about (-a):
 
 > [!TIP]
 > Start an issue or file a PR; make sure any code changes are well commented.
+
+rper To-do:
+- process the leading number in a 4 digit octal value, instead of stripping
+- rwx notation output (flag -c); allows use of rwx notation, instead of numerical
+  values. i.e `rper -p rwxr-xr-x ./change/this/to/sevenfivefive/permissions`
